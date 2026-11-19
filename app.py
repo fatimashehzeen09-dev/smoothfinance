@@ -45,7 +45,7 @@ def money(value):
 
 def layout(title, content, message="", user=None):
     alert = f'<p class="alert" role="status">{escape(message)}</p>' if message else ""
-    nav = ('<a href="/">Dashboard</a>' + form("/logout", "", "Sign out", css="inline subtle")
+    nav = ('<a href="/dashboard">Dashboard</a>' + form("/logout", "", "Sign out", css="inline subtle")
            if user else '<a href="/login">Sign in</a><a href="/register">Sign up</a>')
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -79,6 +79,26 @@ def chit_fields(chit=None, locked=False):
     required value="{capacity}"{readonly}></label></div>"""
 
 
+def homepage(user):
+    primary = ('<a class="hero-button" href="/dashboard">Open dashboard →</a>' if user
+               else '<a class="hero-button" href="/register">Create an account →</a>'
+                    '<a class="home-signin" href="/login">Sign in</a>')
+    return f"""<section class="hero home-hero"><small>HALAL CHIT FUND · SCHOOL PROJECT</small>
+    <h1>SmoothFinance</h1>
+    <p>A rotating savings simulator where members contribute equally and take turns receiving the full pool.</p>
+    <div class="home-actions">{primary}</div></section>
+    <div class="grid home-grid">
+    <section class="card"><h2>About the project</h2>
+    <p>SmoothFinance is a Python and SQLite web application that demonstrates how a fixed-order savings circle works without interest, fees, or bidding.</p>
+    <ol class="project-steps"><li>Create a chit and enroll members in payout order.</li>
+    <li>Record each member’s contribution through a simulated UPI or card checkout.</li>
+    <li>Record the full payout once everyone contributes, then repeat until every member has received it once.</li></ol>
+    <p>All contributions and payouts use simulated funds.</p></section>
+    <section class="card"><h2>Project team</h2>
+    <ul class="team-list"><li>Shehzeen Fatima</li><li>Shaik Asefa</li>
+    <li>Nabbehunnisa</li><li>Maryam Mohd</li></ul></section></div>"""
+
+
 def dashboard(db, user):
     chits = db.execute("""
         SELECT c.*, (SELECT COUNT(*) FROM members WHERE chit_id = c.id) AS enrolled,
@@ -104,7 +124,7 @@ def dashboard(db, user):
     <div><span>Payouts recorded</span><strong>{sum(chit["rounds"] for chit in chits)}</strong></div>
     </div>
     <div class="grid"><section><h2>Your chits <span class="count">{len(chits)}</span></h2>{listing}</section>
-    <section id="create"><h2>Create a chit</h2><div class="card">{form("/", chit_fields(), "Create chit", "create")}</div></section></div>"""
+    <section id="create"><h2>Create a chit</h2><div class="card">{form("/dashboard", chit_fields(), "Create chit", "create")}</div></section></div>"""
 
 
 def chit_state(db, chit):
@@ -178,7 +198,7 @@ def detail(db, chit, confirm_delete=False):
         deletion = ("<p>Permanently delete this chit, its members, and all round records?</p>"
                     + form(path, "", "Yes, delete chit", "delete", "danger")
                     + f'<p><a href="{path}">Cancel</a></p>')
-    return f"""<div class="hero compact"><a href="/">← All chits</a>
+    return f"""<div class="hero compact"><a href="/dashboard">← All chits</a>
     <h1>{escape(chit['name'])}</h1><p>{money(amount)} per member per round · {pot} total pool</p></div>
     <div class="grid"><div><section class="card round">{round_panel}</section>
     <section class="card"><h2>Members <span class="count">{len(members)}/{capacity}</span></h2>
@@ -257,7 +277,7 @@ def update(db, chit, data, user_id):
 
     if action == "delete":
         db.execute("DELETE FROM chits WHERE id = ?", (chit_id,))
-        return "/", "Chit deleted."
+        return "/dashboard", "Chit deleted."
     if action == "edit":
         name, contribution, new_capacity = chit_values(data)
         if locked and (contribution, new_capacity) != (chit["contribution"], capacity):
@@ -425,9 +445,9 @@ def route(environ, start_response, token):
                        content_type="text/css; charset=utf-8")
     match = re.fullmatch(r"/chits/([0-9]{1,18})", path)
     auth = path in {"/login", "/register"}
-    if path not in {"/", "/logout"} and not (auth or match):
+    if path not in {"/", "/dashboard", "/logout"} and not (auth or match):
         return respond(start_response, layout("Page missing", "<h1>Page missing</h1>"), 404)
-    allowed = {"POST"} if path == "/logout" else {"GET", "POST"}
+    allowed = {"/": {"GET"}, "/logout": {"POST"}}.get(path, {"GET", "POST"})
     if method not in allowed:
         return respond(start_response, "", 405, (("Allow", ", ".join(sorted(allowed))),))
 
@@ -440,10 +460,12 @@ def route(environ, start_response, token):
             SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = ? AND s.expires > ?
         """, (digest(token), int(time()))).fetchone() if token else None
+        if path == "/":
+            return respond(start_response, layout("Home", homepage(user), user=user))
         if not user and not auth:
             return redirect(start_response, "/login")
         if user and auth:
-            return redirect(start_response, "/")
+            return redirect(start_response, "/dashboard")
         chit = None
         if match:
             chit = db.execute("SELECT * FROM chits WHERE id = ? AND owner_id = ?",
@@ -463,7 +485,7 @@ def route(environ, start_response, token):
                     db.execute("DELETE FROM sessions WHERE expires <= ?", (now,))
                     db.execute("INSERT INTO sessions VALUES (?, ?, ?)",
                                (digest(new_token), user_id, now + SESSION_AGE))
-                    return redirect(start_response, "/", headers=(
+                    return redirect(start_response, "/dashboard", headers=(
                         session_cookie(environ, new_token, SESSION_AGE),))
                 if path == "/logout":
                     db.execute("DELETE FROM sessions WHERE token_hash = ?", (digest(token),))
