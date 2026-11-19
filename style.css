@@ -82,3 +82,11 @@ select { display: block; width: 100%; margin-top: 5px; border: 1px solid #a7baae
 .account-email { overflow-wrap: anywhere; font-size: .85rem; }
 @media (max-width: 740px) { .auth-grid { grid-template-columns: 1fr; } }
 @media (max-width: 420px) { nav a[href="/register"] { display: inline; } nav .demo { display: none; } }
+.home-hero h1 { font-size: clamp(3rem, 10vw, 6rem); }
+.home-actions { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; }
+.home-signin { font-weight: 700; }
+.project-steps { padding-inline-start: 22px; }
+.project-steps li { margin-block: 8px; }
+.team-list { list-style: none; padding: 0; margin: 0; }
+.team-list li { padding: 10px 0; font-weight: 650; }
+.team-list li + li { border-top: 1px solid var(--line); }
