@@ -7,6 +7,13 @@ or real payments.
 
 ## Run locally
 
+On Windows, install Python 3.10 or newer, extract the project, and
+double-click `Start_SmoothFinance.bat`. Keep the launcher window open.
+If your browser does not open automatically, go to
+[http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+### Start from a terminal
+
 1. Extract the ZIP and open a terminal in the `halal-chit-fund` folder.
 2. Run `python app.py`. On Windows you can also use `py app.py`.
 3. Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
