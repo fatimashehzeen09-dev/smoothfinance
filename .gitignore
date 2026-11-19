@@ -1,3 +1,10 @@
+.venv/
 __pycache__/
 *.pyc
-chits.sqlite3*
+instance/
+*.sqlite*
+.env*
+!.env.example
+original.html
+.vercel/
+outputs/

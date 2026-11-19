@@ -1,24 +1,11 @@
 @echo off
-setlocal
 cd /d "%~dp0"
-
-py -3 -c "import sys; sys.exit(sys.version_info < (3, 10))" >nul 2>&1
-if not errorlevel 1 (
-    py -3 app.py --open-browser
-    goto finished
+if not exist .venv\Scripts\python.exe py -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+if errorlevel 1 (
+  pause
+  exit /b 1
 )
-
-python -c "import sys; sys.exit(sys.version_info < (3, 10))" >nul 2>&1
-if not errorlevel 1 (
-    python app.py --open-browser
-    goto finished
-)
-
-echo Python 3.10 or newer is required.
-echo Install Python from https://www.python.org/downloads/windows/
-echo Then double-click this launcher again.
+start "" http://127.0.0.1:5000
+.venv\Scripts\python.exe app.py
 pause
-exit /b 1
-
-:finished
-if errorlevel 1 pause
