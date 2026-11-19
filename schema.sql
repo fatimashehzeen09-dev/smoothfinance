@@ -1,6 +1,16 @@
 PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL, salt TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS chits (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+    owner_id INTEGER REFERENCES users(id),
     contribution INTEGER NOT NULL CHECK (contribution BETWEEN 1 AND 10000000),
     capacity INTEGER NOT NULL CHECK (capacity BETWEEN 2 AND 60)
 );
