@@ -36,10 +36,10 @@ def layout(title, content, message=""):
     alert = f'<p class="alert" role="status">{escape(message)}</p>' if message else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{escape(title)} | Halal Chit Fund</title><link rel="stylesheet" href="/style.css">
-    </head><body><header><div class="shell nav"><a href="/" class="brand">◈ &nbsp; Halal Chit Fund</a>
-    <span>School project</span></div></header><main class="shell">{alert}{content}</main>
-    <footer class="shell">Classroom simulation · All entries use simulated funds.</footer></body></html>"""
+    <title>{escape(title)} | SmoothFinance</title><link rel="stylesheet" href="/style.css">
+    </head><body><header><div class="shell nav"><a href="/" class="brand"><span class="brand-icon" aria-hidden="true">◈</span> SmoothFinance</a>
+    <nav aria-label="Main navigation"><a href="/">Dashboard</a><span class="demo">Demo mode</span></nav></div></header><main class="shell">{alert}{content}</main>
+    <footer class="shell">SmoothFinance · Halal chit fund school project · Simulated funds only</footer></body></html>"""
 
 
 def form(path, fields, label, action="", css=""):
@@ -81,11 +81,16 @@ def dashboard(db):
         <p>{chit['enrolled']}/{chit['capacity']} members · {money(chit['contribution'])} per round</p>
         </div><a class="link-button" href="/chits/{chit['id']}">Open →</a></article>""")
     listing = "".join(cards) or '<div class="card"><p>No chits yet. Create one to get started.</p></div>'
-    return f"""<div class="hero"><small>ROTATING SAVINGS</small><h1>Chit dashboard</h1>
-    <p>Members contribute equally each round and take turns receiving the full pool.
-    The simulation uses a fixed rotation with zero interest, fees, or bidding.</p></div>
+    return f"""<div class="hero"><small>ROTATING SAVINGS</small><h1>Manage your savings circles</h1>
+    <p>Set up a chit, track member contributions, and manage payouts in a fixed rotation with zero interest, fees, or bidding.</p>
+    <a class="hero-button" href="#create">Create a chit <span aria-hidden="true">→</span></a></div>
+    <div class="metrics" aria-label="Dashboard totals">
+    <div><span>Total chits</span><strong>{len(chits)}</strong></div>
+    <div><span>Enrolled members</span><strong>{sum(chit["enrolled"] for chit in chits)}</strong></div>
+    <div><span>Payouts recorded</span><strong>{sum(chit["rounds"] for chit in chits)}</strong></div>
+    </div>
     <div class="grid"><section><h2>Your chits <span class="count">{len(chits)}</span></h2>{listing}</section>
-    <section><h2>Create a chit</h2><div class="card">{form("/", chit_fields(), "Create chit", "create")}</div></section></div>"""
+    <section id="create"><h2>Create a chit</h2><div class="card">{form("/", chit_fields(), "Create chit", "create")}</div></section></div>"""
 
 
 def chit_state(db, chit):
@@ -118,9 +123,11 @@ def detail(db, chit, confirm_delete=False):
         action = ""
         if full and not complete:
             is_paid = member_id in paid
-            action += form(path, member_field + hidden("round", round_number),
-                           "Undo payment" if is_paid else "Record payment",
-                           "undo" if is_paid else "pay", "inline")
+            if is_paid:
+                action += form(path, member_field + hidden("round", round_number),
+                               "Undo payment", "undo", "inline subtle")
+            else:
+                action += f'<a class="link-button pay" href="{path}?checkout={member_id}">Pay {money(amount)}</a>'
         if not locked:
             action += form(path, member_field, "Remove", "remove", "inline subtle")
         status = "Complete" if complete else "Paid" if member_id in paid else "Due" if full else "Enrolled"
@@ -167,6 +174,34 @@ def detail(db, chit, confirm_delete=False):
     {"<p>Contribution and slots are locked once payments are recorded.</p>" if locked else ""}
     {form(path, chit_fields(chit, locked), "Save changes", "edit")}</section>
     <section class="card">{deletion}</section></aside></div>"""
+
+
+def checkout(db, chit, member_value):
+    members, _, round_number, paid = chit_state(db, chit)
+    member_id = bounded_int({"member": member_value}, "member", 1, 2**63 - 1)
+    member = next((person for person in members if person["id"] == member_id), None)
+    if (member is None or len(members) != chit["capacity"]
+            or round_number > chit["capacity"] or member_id in paid):
+        raise ValueError("Checkout is unavailable for this contribution.")
+
+    path = f"/chits/{chit['id']}"
+    fields = (hidden("member", member_id) + hidden("round", round_number)
+              + hidden("amount", chit["contribution"]))
+    fields += """<label>Demo payment method<select name="method" required>
+    <option value="upi">Test UPI</option><option value="card">Test card</option></select></label>
+    <label>Simulated outcome<select name="outcome" required>
+    <option value="success">Approve payment</option>
+    <option value="decline">Decline payment</option></select></label>"""
+    return f"""<div class="checkout"><a href="{path}">← Back to chit</a>
+    <section class="card"><span class="demo">Sandbox checkout</span>
+    <h1>Pay contribution</h1>
+    <p>Choose a test method and outcome. No money moves and no payment details are collected.</p>
+    <dl class="summary"><div><dt>Chit</dt><dd>{escape(chit['name'])}</dd></div>
+    <div><dt>Member</dt><dd>{escape(member['name'])}</dd></div>
+    <div><dt>Round</dt><dd>{round_number} of {chit['capacity']}</dd></div>
+    <div class="total"><dt>Total</dt><dd>{money(chit['contribution'])}</dd></div></dl>
+    {form(path, fields, "Run test payment", "pay")}
+    <p><a href="{path}">Cancel checkout</a></p></section></div>"""
 
 
 def bounded_int(data, field, minimum, maximum):
@@ -247,8 +282,18 @@ def update(db, chit, data):
         return path, "Member removed."
     params = chit_id, round_number, member_id
     if action == "pay":
-        db.execute("INSERT OR IGNORE INTO contributions VALUES (?, ?, ?)", params)
-        return path, "Contribution recorded."
+        if member_id in paid:
+            return path, "This contribution has already been paid."
+        if bounded_int(data, "amount", 1, 10000000) != chit["contribution"]:
+            raise ValueError("The contribution amount changed. Open checkout again.")
+        method, outcome = data.get("method"), data.get("outcome")
+        if method not in {"upi", "card"} or outcome not in {"success", "decline"}:
+            raise ValueError("Choose a valid test payment method and outcome.")
+        if outcome == "decline":
+            return f"{path}?checkout={member_id}", "Test payment declined. Try again or cancel checkout."
+        db.execute("INSERT INTO contributions VALUES (?, ?, ?)", params)
+        method_label = {"upi": "UPI", "card": "card"}[method]
+        return path, f"Test {method_label} payment approved. Contribution recorded."
     db.execute("DELETE FROM contributions WHERE chit_id = ? AND round = ? AND member_id = ?", params)
     return path, "Contribution removed."
 
@@ -297,10 +342,17 @@ def application(environ, start_response):
             except ValueError as error:
                 db.rollback()
                 destination, message = path, str(error)
-            location = destination + "?" + urlencode({"message": message})
+            separator = "&" if "?" in destination else "?"
+            location = destination + separator + urlencode({"message": message})
             return respond(start_response, "", 303, (("Location", location),))
         query = parse_qs(environ.get("QUERY_STRING", ""))
         message = query.get("message", [""])[0][:240]
+        if chit and "checkout" in query:
+            try:
+                return respond(start_response, layout(
+                    "Pay contribution", checkout(db, chit, query["checkout"][0]), message))
+            except ValueError as error:
+                message = str(error)
         content = detail(db, chit, query.get("confirm") == ["delete"]) if chit else dashboard(db)
         return respond(start_response, layout(chit["name"] if chit else "Dashboard", content, message))
 
