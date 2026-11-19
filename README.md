@@ -24,7 +24,7 @@ Use Python 3.10 or newer. There are no packages to install. The app creates
 
 ## Classroom demo
 
-1. Create a chit with three member slots and a ₹500 contribution.
+1. Create an account with a test email address. Email delivery is not required. Then create a chit with three member slots and a ₹500 contribution.
 2. Add three members in the order they should receive payouts.
 3. Open checkout for each member and approve a test payment. Try a decline and a cancellation first, then use Undo payment to reverse one approval before payout.
 4. After all three contributions are recorded, record the ₹1,500 payout.
@@ -39,7 +39,7 @@ Delete chit removes the group and all of its records after confirmation.
 ## Source files
 
 - `app.py` handles web routes, validation, and database transactions.
-- `schema.sql` defines the four SQLite tables and their constraints.
+- `schema.sql` defines the SQLite tables and their constraints.
 - `style.css` styles the dashboard and chit details.
 
-The website is designed for one local operator. The demo checkout never collects payment credentials or contacts a payment provider.
+Sign up and sign in to manage your own chits. Passwords are salted and hashed. Signing out ends the current session. When upgrading an existing local database, the first account receives any chits created before accounts were added. The demo checkout never collects payment credentials or contacts a payment provider.
