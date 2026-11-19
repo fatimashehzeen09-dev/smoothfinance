@@ -3,7 +3,7 @@
 A classroom simulation of rotating savings built with Python and SQLite.
 Every member contributes the same amount each round and receives the full
 pool once, in enrollment order. The project uses no interest, fees, bids,
-or real payments.
+or real payments. Its simulated gateway offers test UPI and card methods with approve, decline, and cancel paths.
 
 ## Run locally
 
@@ -26,7 +26,7 @@ Use Python 3.10 or newer. There are no packages to install. The app creates
 
 1. Create a chit with three member slots and a ₹500 contribution.
 2. Add three members in the order they should receive payouts.
-3. Record each contribution. Test the Undo payment button on the current round.
+3. Open checkout for each member and approve a test payment. Try a decline and a cancellation first, then use Undo payment to reverse one approval before payout.
 4. After all three contributions are recorded, record the ₹1,500 payout.
 5. Repeat for the next two rounds and check the payout history.
 6. Create a second chit to demonstrate editing and confirmed deletion.
@@ -42,5 +42,4 @@ Delete chit removes the group and all of its records after confirmation.
 - `schema.sql` defines the four SQLite tables and their constraints.
 - `style.css` styles the dashboard and chit details.
 
-The website is designed for one local operator. It has no user accounts
-or payment integration.
+The website is designed for one local operator. The demo checkout never collects payment credentials or contacts a payment provider.
