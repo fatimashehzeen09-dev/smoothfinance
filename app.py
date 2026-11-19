@@ -1,4 +1,5 @@
 """Local classroom web app. Run with Python 3.10 or newer."""
+import argparse
 from contextlib import closing
 from html import escape
 from http import HTTPStatus
@@ -7,6 +8,7 @@ import re
 import secrets
 import sqlite3
 from urllib.parse import parse_qs, urlencode
+import webbrowser
 from wsgiref.simple_server import make_server
 
 ROOT = Path(__file__).resolve().parent
@@ -304,7 +306,15 @@ def application(environ, start_response):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the local Halal Chit Fund website.")
+    parser.add_argument("--open-browser", action="store_true", help="open the website after startup")
+    args = parser.parse_args()
     initialize()
     with make_server("127.0.0.1", 8000, application) as server:
         print("Halal Chit Fund is running at http://127.0.0.1:8000", flush=True)
-        server.serve_forever()
+        if args.open_browser:
+            webbrowser.open("http://127.0.0.1:8000")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
