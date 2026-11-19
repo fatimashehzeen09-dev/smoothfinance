@@ -1,12 +1,16 @@
 """Local classroom web app. Run with Python 3.10 or newer."""
 import argparse
 from contextlib import closing
+from contextvars import ContextVar
+from hashlib import pbkdf2_hmac, sha256
 from html import escape
 from http import HTTPStatus
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+from time import time
 from urllib.parse import parse_qs, urlencode
 import webbrowser
 from wsgiref.simple_server import make_server
@@ -14,6 +18,8 @@ from wsgiref.simple_server import make_server
 ROOT = Path(__file__).resolve().parent
 DATABASE = ROOT / "chits.sqlite3"
 FORM_TOKEN = secrets.token_urlsafe(32)
+csrf = ContextVar("csrf", default=FORM_TOKEN)
+SESSION_AGE = 7 * 24 * 60 * 60
 
 
 def connect():
@@ -24,27 +30,34 @@ def connect():
 
 
 def initialize():
-    with closing(connect()) as db:
+    with closing(connect()) as db, db:
         db.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
+        db.execute("BEGIN IMMEDIATE")
+        columns = {column["name"] for column in db.execute("PRAGMA table_info(chits)")}
+        if "owner_id" not in columns:
+            db.execute("ALTER TABLE chits ADD COLUMN owner_id INTEGER REFERENCES users(id)")
+        db.execute("CREATE INDEX IF NOT EXISTS chits_owner ON chits(owner_id)")
 
 
 def money(value):
     return f"₹{value:,}"
 
 
-def layout(title, content, message=""):
+def layout(title, content, message="", user=None):
     alert = f'<p class="alert" role="status">{escape(message)}</p>' if message else ""
+    nav = ('<a href="/">Dashboard</a>' + form("/logout", "", "Sign out", css="inline subtle")
+           if user else '<a href="/login">Sign in</a><a href="/register">Sign up</a>')
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{escape(title)} | SmoothFinance</title><link rel="stylesheet" href="/style.css">
     </head><body><header><div class="shell nav"><a href="/" class="brand"><span class="brand-icon" aria-hidden="true">◈</span> SmoothFinance</a>
-    <nav aria-label="Main navigation"><a href="/">Dashboard</a><span class="demo">Demo mode</span></nav></div></header><main class="shell">{alert}{content}</main>
+    <nav aria-label="Main navigation">{nav}<span class="demo">Demo mode</span></nav></div></header><main class="shell">{alert}{content}</main>
     <footer class="shell">SmoothFinance · Halal chit fund school project · Simulated funds only</footer></body></html>"""
 
 
 def form(path, fields, label, action="", css=""):
     return f"""<form method="post" action="{path}" class="{css}">
-    <input type="hidden" name="token" value="{FORM_TOKEN}">
+    <input type="hidden" name="token" value="{csrf.get()}">
     <input type="hidden" name="action" value="{action}">{fields}
     <button type="submit">{label}</button></form>"""
 
@@ -66,12 +79,12 @@ def chit_fields(chit=None, locked=False):
     required value="{capacity}"{readonly}></label></div>"""
 
 
-def dashboard(db):
+def dashboard(db, user):
     chits = db.execute("""
         SELECT c.*, (SELECT COUNT(*) FROM members WHERE chit_id = c.id) AS enrolled,
         (SELECT COUNT(*) FROM payouts WHERE chit_id = c.id) AS rounds
-        FROM chits c ORDER BY c.id DESC
-    """).fetchall()
+        FROM chits c WHERE c.owner_id = ? ORDER BY c.id DESC
+    """, (user["id"],)).fetchall()
     cards = []
     for chit in chits:
         status = ("Completed" if chit["rounds"] == chit["capacity"] else
@@ -82,6 +95,7 @@ def dashboard(db):
         </div><a class="link-button" href="/chits/{chit['id']}">Open →</a></article>""")
     listing = "".join(cards) or '<div class="card"><p>No chits yet. Create one to get started.</p></div>'
     return f"""<div class="hero"><small>ROTATING SAVINGS</small><h1>Manage your savings circles</h1>
+    <p class="account-email">Signed in as {escape(user["email"])}</p>
     <p>Set up a chit, track member contributions, and manage payouts in a fixed rotation with zero interest, fees, or bidding.</p>
     <a class="hero-button" href="#create">Create a chit <span aria-hidden="true">→</span></a></div>
     <div class="metrics" aria-label="Dashboard totals">
@@ -226,13 +240,13 @@ def chit_values(data):
             bounded_int(data, "capacity", 2, 60))
 
 
-def update(db, chit, data):
+def update(db, chit, data, user_id):
     action = data.get("action")
     if chit is None:
         if action != "create":
             raise ValueError("Unknown action.")
-        result = db.execute("INSERT INTO chits (name, contribution, capacity) VALUES (?, ?, ?)",
-                            chit_values(data))
+        result = db.execute("INSERT INTO chits (name, contribution, capacity, owner_id) VALUES (?, ?, ?, ?)",
+                            (*chit_values(data), user_id))
         return f"/chits/{result.lastrowid}", "Chit created."
 
     chit_id = chit["id"]
@@ -308,53 +322,170 @@ def respond(start_response, body, status=200, headers=(), content_type="text/htm
     return [body.encode("utf-8")]
 
 
+def password_digest(password, salt):
+    return pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000).hex()
+
+
+def session_token(environ):
+    cookie = SimpleCookie()
+    try:
+        cookie.load(environ.get("HTTP_COOKIE", ""))
+    except CookieError:
+        return ""
+    value = cookie.get("smoothfinance_session")
+    return value.value if value and re.fullmatch(r"[A-Za-z0-9_-]{43}", value.value) else ""
+
+
+def session_cookie(environ, value, age):
+    secure = "; Secure" if environ.get("wsgi.url_scheme") == "https" else ""
+    return ("Set-Cookie", f"smoothfinance_session={value}; Path=/; HttpOnly; SameSite=Lax"
+            f"; Max-Age={age}{secure}")
+
+
+def digest(value):
+    return sha256(value.encode()).hexdigest()
+
+
+def auth_page(register):
+    path = "/register" if register else "/login"
+    title = "Create your account" if register else "Sign in"
+    alternate = ('Already have an account? <a href="/login">Sign in</a>'
+                 if register else 'New to SmoothFinance? <a href="/register">Create an account</a>')
+    password_mode = "new-password" if register else "current-password"
+    minimum = ' minlength="8"' if register else ""
+    fields = f"""<label>Email address<input name="email" type="email" autocomplete="username"
+    maxlength="254" required></label>
+    <label>Password<input name="password" type="password" autocomplete="{password_mode}"
+    maxlength="128"{minimum} required></label>"""
+    if register:
+        fields += """<label>Confirm password<input name="confirmation" type="password"
+        autocomplete="new-password" minlength="8" maxlength="128" required></label>"""
+    return title, f"""<div class="auth-grid"><section class="hero auth-intro">
+    <small>ROTATING SAVINGS</small><h1>Manage your savings circles</h1>
+    <p>Track your chits, member contributions, and payouts from your own dashboard.</p>
+    </section><section class="card auth-card"><h2>{title}</h2>
+    {form(path, fields, title)}<p>{alternate}</p></section></div>"""
+
+
+def authenticate(db, data, register):
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ValueError("Enter a valid email address.")
+    if not 8 <= len(password) <= 128:
+        raise ValueError("Use a password between 8 and 128 characters.")
+    account = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if register:
+        if password != data.get("confirmation"):
+            raise ValueError("The passwords do not match.")
+        if account:
+            raise ValueError("An account already exists for this email. Sign in instead.")
+        salt = secrets.token_hex(16)
+        user_id = db.execute("INSERT INTO users (email, password_hash, salt) VALUES (?, ?, ?)",
+                             (email, password_digest(password, salt), salt)).lastrowid
+        if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1:
+            db.execute("UPDATE chits SET owner_id = ? WHERE owner_id IS NULL", (user_id,))
+        return user_id
+    salt = account["salt"] if account else "0" * 32
+    candidate = password_digest(password, salt)
+    if not account or not secrets.compare_digest(candidate, account["password_hash"]):
+        raise ValueError("Email or password is incorrect.")
+    return account["id"]
+
+
+def read_form(environ):
+    size = int(environ.get("CONTENT_LENGTH") or 0)
+    if not 0 < size <= 8192:
+        raise ValueError("Invalid form size.")
+    values = parse_qs(environ["wsgi.input"].read(size).decode("utf-8"),
+                      keep_blank_values=True, max_num_fields=20)
+    return {key: items[0] for key, items in values.items()}
+
+
+def redirect(start_response, destination, message="", headers=()):
+    if message:
+        destination += ("&" if "?" in destination else "?") + urlencode({"message": message})
+    return respond(start_response, "", 303, (("Location", destination), *headers))
+
+
 def application(environ, start_response):
+    token = session_token(environ)
+    marker = csrf.set(digest("form:" + token) if token else FORM_TOKEN)
+    try:
+        return route(environ, start_response, token)
+    finally:
+        csrf.reset(marker)
+
+
+def route(environ, start_response, token):
     path = environ["PATH_INFO"]
     method = environ["REQUEST_METHOD"]
     if path == "/style.css" and method == "GET":
         return respond(start_response, (ROOT / "style.css").read_text(encoding="utf-8"),
                        content_type="text/css; charset=utf-8")
     match = re.fullmatch(r"/chits/([0-9]{1,18})", path)
-    if path != "/" and not match:
+    auth = path in {"/login", "/register"}
+    if path not in {"/", "/logout"} and not (auth or match):
         return respond(start_response, layout("Page missing", "<h1>Page missing</h1>"), 404)
-    if method not in {"GET", "POST"}:
-        return respond(start_response, "", 405, (("Allow", "GET, POST"),))
+    allowed = {"POST"} if path == "/logout" else {"GET", "POST"}
+    if method not in allowed:
+        return respond(start_response, "", 405, (("Allow", ", ".join(sorted(allowed))),))
 
+    query = parse_qs(environ.get("QUERY_STRING", ""))
+    message = query.get("message", [""])[0][:240]
     with closing(connect()) as db, db:
         if method == "POST":
             db.execute("BEGIN IMMEDIATE")
+        user = db.execute("""
+            SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+            WHERE s.token_hash = ? AND s.expires > ?
+        """, (digest(token), int(time()))).fetchone() if token else None
+        if not user and not auth:
+            return redirect(start_response, "/login")
+        if user and auth:
+            return redirect(start_response, "/")
         chit = None
         if match:
-            chit = db.execute("SELECT * FROM chits WHERE id = ?", (int(match[1]),)).fetchone()
+            chit = db.execute("SELECT * FROM chits WHERE id = ? AND owner_id = ?",
+                              (int(match[1]), user["id"])).fetchone()
             if not chit:
-                return respond(start_response, layout("Chit missing", "<h1>Chit missing</h1>"), 404)
+                return respond(start_response, layout("Chit missing", "<h1>Chit missing</h1>", user=user), 404)
         if method == "POST":
             try:
-                size = int(environ.get("CONTENT_LENGTH") or 0)
-                if not 0 < size <= 8192:
-                    raise ValueError("Invalid form size.")
-                values = parse_qs(environ["wsgi.input"].read(size).decode("utf-8"),
-                                  keep_blank_values=True, max_num_fields=20)
-                data = {key: items[0] for key, items in values.items()}
-                if not secrets.compare_digest(data.get("token", "").encode(), FORM_TOKEN.encode()):
-                    return respond(start_response, layout("Expired form", "<h1>Refresh the form and try again.</h1>"), 403)
-                destination, message = update(db, chit, data)
+                data = read_form(environ)
+                if not secrets.compare_digest(data.get("token", "").encode(), csrf.get().encode()):
+                    return respond(start_response, layout("Expired form",
+                                   "<h1>Refresh the form and try again.</h1>", user=user), 403)
+                if auth:
+                    user_id = authenticate(db, data, path == "/register")
+                    new_token = secrets.token_urlsafe(32)
+                    now = int(time())
+                    db.execute("DELETE FROM sessions WHERE expires <= ?", (now,))
+                    db.execute("INSERT INTO sessions VALUES (?, ?, ?)",
+                               (digest(new_token), user_id, now + SESSION_AGE))
+                    return redirect(start_response, "/", headers=(
+                        session_cookie(environ, new_token, SESSION_AGE),))
+                if path == "/logout":
+                    db.execute("DELETE FROM sessions WHERE token_hash = ?", (digest(token),))
+                    return redirect(start_response, "/login", "You signed out.",
+                                    (session_cookie(environ, "", 0),))
+                destination, message = update(db, chit, data, user["id"])
             except ValueError as error:
                 db.rollback()
                 destination, message = path, str(error)
-            separator = "&" if "?" in destination else "?"
-            location = destination + separator + urlencode({"message": message})
-            return respond(start_response, "", 303, (("Location", location),))
-        query = parse_qs(environ.get("QUERY_STRING", ""))
-        message = query.get("message", [""])[0][:240]
+            return redirect(start_response, destination, message)
+
+        if auth:
+            title, content = auth_page(path == "/register")
+            return respond(start_response, layout(title, content, message))
         if chit and "checkout" in query:
             try:
                 return respond(start_response, layout(
-                    "Pay contribution", checkout(db, chit, query["checkout"][0]), message))
+                    "Pay contribution", checkout(db, chit, query["checkout"][0]), message, user))
             except ValueError as error:
                 message = str(error)
-        content = detail(db, chit, query.get("confirm") == ["delete"]) if chit else dashboard(db)
-        return respond(start_response, layout(chit["name"] if chit else "Dashboard", content, message))
+        content = detail(db, chit, query.get("confirm") == ["delete"]) if chit else dashboard(db, user)
+        return respond(start_response, layout(chit["name"] if chit else "Dashboard", content, message, user))
 
 
 if __name__ == "__main__":
